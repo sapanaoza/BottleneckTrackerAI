@@ -32,10 +32,7 @@ BottleneckTrackerAI is an intelligent multi-agent system built with the Agent De
 2. Build the project using your preferred build tool.
 3. Run the main agent container to start agents.
 4. Configure SMTP settings for email alerts.
-
-## License
-
-Specify your license here, e.g., MIT License.
+ 
 
 ---
 
