@@ -1,101 +1,170 @@
 package org.example.Agents;
 
-import com.google.cloud.bigquery.BigQuery;
-import com.google.cloud.bigquery.BigQueryOptions;
-import com.google.cloud.bigquery.FormatOptions;
-import com.google.cloud.bigquery.Job;
-import com.google.cloud.bigquery.JobInfo;
-import com.google.cloud.bigquery.LoadJobConfiguration;
-import com.google.cloud.bigquery.TableId;
+import com.google.cloud.bigquery.*;
 import jade.core.Agent;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
- * JADE agent responsible for loading data from a Google Cloud Storage (GCS) JSONL file
- * into a BigQuery table.
+ * JADE Agent responsible for loading processed machine bottleneck data
+ * from Google Cloud Storage (JSONL or CSV format) into a BigQuery table.
  *
- * This agent uses the Google Cloud BigQuery client library to perform
- * a load job, appending data to the specified BigQuery table.
+ * <p>This agent runs as part of a multi-agent system and performs
+ * batch data ingestion tasks on startup, then terminates itself.</p>
  *
- * The agent terminates itself after the loading operation is complete.
+ * <p>Assumptions:
+ * - Google Cloud credentials and environment are properly configured.
+ * - BigQuery dataset and table exist and have appropriate permissions.
+ * - Input files in GCS bucket are accessible.</p>
  */
 public class BigQueryLoaderAgent extends Agent {
 
-    // BigQuery service client, initialized with default credentials/environment
+    // Logger for structured logging instead of System.out/err
+    private static final Logger logger = Logger.getLogger(BigQueryLoaderAgent.class.getName());
+
+    // BigQuery client initialized once per agent lifecycle
     private final BigQuery bigQuery = BigQueryOptions.getDefaultInstance().getService();
 
-    // (Optional) local CSV file path for reference or future use
-    private static final String CSV_FILE_PATH = "C:\\Desktop\\Java\\BottleNeckTrackerAI-GCP\\BottleNeckTrackerAI\\src\\main\\resources\\org\\example\\data\\machine_data.csv";
+    // Constants: GCS URIs for input data (make configurable in prod)
+    private static final String GCS_URI_JSONL = "gs://bottleneck-model-bucket/machine_data.jsonl";
+    private static final String GCS_URI_CSV = "gs://bottleneck-model-bucket/machine_data.csv";
 
-    /**
-     * JADE lifecycle setup method.
-     * This method is called automatically when the agent starts.
-     */
+    // Constants: Target BigQuery dataset and table names (make configurable)
+    private static final String DATASET_NAME = "bottleneck_data";
+    private static final String TABLE_NAME = "machine_metrics";
+
     @Override
     protected void setup() {
-        System.out.println(getLocalName() + "Uploads processed bottleneck data to Google BigQuery for analytics....");
-
-        // Define dataset, table, and GCS URI parameters
-        final String datasetName = "bottleneck_data";
-        final String tableName = "machine_metrics";
-        final String gcsUri = "gs://bottleneck-model-bucket/machine_data.jsonl";
+        logger.info(getLocalName() + " started: Uploading bottleneck data to BigQuery for further analysis..");
 
         try {
-            // Perform the data load operation from GCS to BigQuery
-            loadDataFromGCS(datasetName, tableName, gcsUri);
+            // Load JSONL data first; comment out CSV load if not needed
+            loadDataFromGCSJSONL(DATASET_NAME, TABLE_NAME, GCS_URI_JSONL);
+
+            // Load CSV data optionally
+            //loadDataFromGCSCSV(DATASET_NAME, TABLE_NAME, GCS_URI_CSV);
+
         } catch (InterruptedException e) {
-            System.err.println(getLocalName() + ": Interrupted while waiting for BigQuery job completion.");
-            Thread.currentThread().interrupt(); // Restore interrupt status
+            logger.log(Level.SEVERE, getLocalName() + ": Interrupted while waiting for BigQuery job.", e);
+            Thread.currentThread().interrupt();
         } catch (Exception e) {
-            System.err.println(getLocalName() + ": Exception during BigQuery load operation.");
-            e.printStackTrace();
+            logger.log(Level.SEVERE, getLocalName() + ": Exception during BigQuery load job.", e);
         } finally {
-            // Terminate the agent gracefully after operation is done
+            // Cleanly terminate this agent after job completion
             doDelete();
+            logger.info(getLocalName() + " terminated.");
         }
     }
 
     /**
-     * Loads data from a Google Cloud Storage URI (JSONL format) into a specified BigQuery table.
-     * The data will be appended to any existing data in the table.
+     * Loads newline-delimited JSON (JSONL) data from GCS into BigQuery.
      *
-     * @param datasetName The BigQuery dataset name
-     * @param tableName   The BigQuery table name
-     * @param gcsUri      The Google Cloud Storage URI to the JSONL file
-     * @throws InterruptedException If the thread is interrupted while waiting for the job completion
+     * @param datasetName BigQuery dataset
+     * @param tableName   BigQuery table
+     * @param gcsUri      GCS URI of the JSONL file
+     * @throws InterruptedException if the load job is interrupted
      */
-    public void loadDataFromGCS(String datasetName, String tableName, String gcsUri) throws InterruptedException {
-        // Construct the table identifier for BigQuery
+    public void loadDataFromGCSJSONL(String datasetName, String tableName, String gcsUri) throws InterruptedException {
         TableId tableId = TableId.of(datasetName, tableName);
 
-        // Configure the load job with JSON format and append mode
+        // Explicit schema ensures consistent data structure
+        Schema schema = getMachineMetricsSchema();
+
+        // Configure BigQuery load job with JSON format and append mode
         LoadJobConfiguration loadConfig = LoadJobConfiguration.newBuilder(tableId, gcsUri)
-                .setFormatOptions(FormatOptions.json())  // JSON Lines format input
-                .setWriteDisposition(JobInfo.WriteDisposition.WRITE_APPEND)  // Append data, don't overwrite
+                .setFormatOptions(FormatOptions.json())
+                .setSchema(schema)
+                .setWriteDisposition(JobInfo.WriteDisposition.WRITE_APPEND)
+                .setIgnoreUnknownValues(true)   // Skip fields not in schema
+                .setMaxBadRecords(1)            // Allow 1 bad record before failure
+                .setAutodetect(false)            // We provide explicit schema
                 .build();
 
-        System.out.println(getLocalName() + ": Submitting load job for GCS URI: " + gcsUri);
+        runLoadJob(loadConfig, gcsUri);
+    }
 
-        // Create and submit the load job
+    /**
+     * Loads CSV data from GCS into BigQuery, skipping header row.
+     *
+     * @param datasetName BigQuery dataset
+     * @param tableName   BigQuery table
+     * @param gcsUri      GCS URI of the CSV file
+     * @throws InterruptedException if the load job is interrupted
+     */
+//    public void loadDataFromGCSCSV(String datasetName, String tableName, String gcsUri) throws InterruptedException {
+//        TableId tableId = TableId.of(datasetName, tableName);
+//
+//        // Use explicit schema matching CSV structure
+//        Schema schema = getMachineMetricsSchema();
+//
+//        CsvOptions csvOptions = CsvOptions.newBuilder()
+//                .setSkipLeadingRows(1)  // Skip CSV header row
+//                .build();
+//
+//        LoadJobConfiguration loadConfig = LoadJobConfiguration.newBuilder(tableId, gcsUri)
+//                .setFormatOptions(csvOptions)
+//                .setSchema(schema)
+//                .setWriteDisposition(JobInfo.WriteDisposition.WRITE_APPEND)
+//                .setIgnoreUnknownValues(false)
+//                .setMaxBadRecords(0)
+//                .build();
+//
+//        runLoadJob(loadConfig, gcsUri);
+//    }
+
+    /**
+     * Submits and waits for a BigQuery load job, logging detailed status.
+     *
+     * @param loadConfig Load job configuration
+     * @param gcsUri     Source URI for logging
+     * @throws InterruptedException if the thread is interrupted while waiting
+     */
+    private void runLoadJob(LoadJobConfiguration loadConfig, String gcsUri) throws InterruptedException {
+        logger.info(getLocalName() + ": Submitting load job for: " + gcsUri);
+
+        // Create and start the job
         Job loadJob = bigQuery.create(JobInfo.of(loadConfig));
 
-        // Block until job completes or thread is interrupted
+        // Wait synchronously for job completion
         loadJob = loadJob.waitFor();
 
-        // Handle job null scenario (e.g., job no longer exists)
         if (loadJob == null) {
-            System.err.println(getLocalName() + ": Load job no longer exists.");
+            logger.severe(getLocalName() + ": Load job no longer exists.");
             return;
         }
 
-        // Check job status for success or failure
         if (loadJob.isDone()) {
             if (loadJob.getStatus().getError() == null) {
-                System.out.println(getLocalName() + ": Successfully loaded data from GCS to BigQuery.");
+                logger.info(getLocalName() + ": Data loaded successfully from: " + gcsUri);
             } else {
-                System.err.println(getLocalName() + ": BigQuery load job completed with errors: " + loadJob.getStatus().getError());
+                logger.severe(getLocalName() + ": Load job failed with error: " +
+                        loadJob.getStatus().getError().getMessage());
+
+                if (loadJob.getStatus().getExecutionErrors() != null) {
+                    loadJob.getStatus().getExecutionErrors().forEach(error ->
+                            logger.severe("Execution error: " + error.getMessage()));
+                }
             }
         } else {
-            System.err.println(getLocalName() + ": BigQuery load job did not complete successfully.");
+            logger.severe(getLocalName() + ": Load job did not complete.");
         }
+    }
+
+    /**
+     * Defines the schema for the machine bottleneck metrics table.
+     * This schema must match the structure of the incoming data.
+     *
+     * @return BigQuery Schema object
+     */
+    private Schema getMachineMetricsSchema() {
+        return Schema.of(
+                Field.of("machineId", StandardSQLTypeName.STRING),
+                Field.of("avgRuntime", StandardSQLTypeName.FLOAT64),
+                Field.of("maxRuntime", StandardSQLTypeName.FLOAT64),
+                Field.of("bottleneckRatio", StandardSQLTypeName.FLOAT64),
+                Field.of("bottleneckScore", StandardSQLTypeName.FLOAT64),
+                Field.of("alert", StandardSQLTypeName.BOOL),
+                Field.of("timestamp", StandardSQLTypeName.TIMESTAMP) // Timestamp in ISO 8601 format or epoch millis
+        );
     }
 }

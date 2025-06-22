@@ -1,10 +1,17 @@
 package org.example.Agents;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageOptions;
 import jade.core.Agent;
+
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.FileInputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -12,81 +19,119 @@ import java.nio.file.Paths;
 /**
  * GCSUploaderAgent
  * -----------------
- * A JADE agent that uploads a specified local file to a Google Cloud Storage (GCS) bucket.
+ * A JADE agent that:
+ *  1. Converts timestamps in a JSONL file from ms to s
+ *  2. Uploads the file to Google Cloud Storage (GCS)
  *
- * Arguments expected: [bucketName, objectName, localFilePath]
- *
- * Example:
- *   java -cp yourjar.jar jade.Boot -agents "uploader:org.example.Agents.GCSUploaderAgent(bucket-name, object-name.csv, /path/to/file.csv)"
+ * Arguments expected: [bucketName, objectName, localFilePath, credentialsFilePath]
  */
 public class GCSUploaderAgent extends Agent {
 
-    // GCS client
     private Storage storage;
 
     @Override
     protected void setup() {
-        System.out.println( getLocalName() + " Uploads files and reports to Google Cloud Storage....");
+        System.out.println(getLocalName() + "Starting GCS upload process...");
 
-        // ✅ Initialize GCS client with Application Default Credentials
-        try {
-            storage = StorageOptions.getDefaultInstance().getService();
-        } catch (Exception e) {
-            System.err.println(" Failed to initialize GCS client. Ensure credentials are configured.");
-            e.printStackTrace();
-            doDelete();
-            return;
-        }
-
-        // ✅ Validate agent arguments
+        // Read arguments
         Object[] args = getArguments();
-        if (args == null || args.length < 3) {
-            System.err.println(" Missing arguments. Usage: bucketName, objectName, localFilePath");
+        if (args == null || args.length < 4) {
+            System.err.println(" Missing arguments. Usage: bucketName, objectName, localFilePath, credentialsFilePath");
             doDelete();
             return;
         }
 
         String bucketName = args[0].toString().trim();
         String objectName = args[1].toString().trim();
-        String filePath = args[2].toString().trim();
+        String originalFilePath = args[2].toString().trim();
+        String credentialsPath = args[3].toString().trim();
 
-        // ✅ Upload file
-        try {
-            uploadFileToGCS(bucketName, objectName, filePath);
-            System.out.println(" Upload complete. File: " + filePath + " -> gs://" + bucketName + "/" + objectName);
+        // Initialize GCS client with explicit credentials
+        try (FileInputStream serviceAccountStream = new FileInputStream(credentialsPath)) {
+            storage = StorageOptions.newBuilder()
+                    .setCredentials(ServiceAccountCredentials.fromStream(serviceAccountStream))
+                    .build()
+                    .getService();
+
+            if (storage == null) {
+                throw new IllegalStateException("GCS Storage client initialization failed. `storage` is null.");
+            }
         } catch (Exception e) {
-            System.err.println(" Upload failed: " + e.getMessage());
+            System.err.println(" Failed to initialize GCS client with explicit credentials.");
             e.printStackTrace();
+            doDelete();
+            return;
         }
 
-        // 🔚 Stop agent after operation
-        doDelete();
+        try {
+            if (originalFilePath.endsWith(".jsonl")) {
+                // Convert timestamps in JSONL and upload
+                String fixedFileName = "fixed_" + Paths.get(originalFilePath).getFileName();
+                convertJsonlTimestamps(originalFilePath, fixedFileName);
+                uploadFileToGCS(bucketName, objectName, fixedFileName);
+
+            } else if (originalFilePath.endsWith(".csv")) {
+                // Direct upload for CSV
+                uploadFileToGCS(bucketName, objectName, originalFilePath);
+
+            } else {
+                // Unsupported file type
+                System.err.println(" Unsupported file type for upload: " + originalFilePath);
+            }
+
+            System.out.println(" Upload completed: gs://" + bucketName + "/" + objectName);
+
+        } catch (Exception e) {
+            System.err.println(" Error during file processing or upload: " + e.getMessage());
+            e.printStackTrace();
+        } finally {
+            doDelete(); // Always clean up
+        }
     }
 
     /**
-     * Uploads a local file to a GCS bucket.
-     *
-     * @param bucketName GCS bucket name (must exist)
-     * @param objectName Desired name/path for object in bucket
-     * @param filePath   Full local path to the file
-     * @throws Exception if the file cannot be read or uploaded
+     * Converts timestamps in JSONL file from milliseconds to seconds.
+     */
+    private void convertJsonlTimestamps(String inputPathStr, String outputPathStr) throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        Path inputPath = Paths.get(inputPathStr);
+        Path outputPath = Paths.get(outputPathStr);
+
+        try (
+                BufferedReader reader = Files.newBufferedReader(inputPath);
+                BufferedWriter writer = Files.newBufferedWriter(outputPath)
+        ) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (!line.trim().startsWith("{")) continue;
+
+                ObjectNode json = (ObjectNode) mapper.readTree(line);
+                if (json.has("timestamp")) {
+                    long ms = json.get("timestamp").asLong();
+                    json.put("timestamp", ms / 1000); // convert to seconds
+                }
+
+                writer.write(mapper.writeValueAsString(json));
+                writer.newLine();
+            }
+        }
+    }
+
+    /**
+     * Uploads file to Google Cloud Storage.
      */
     private void uploadFileToGCS(String bucketName, String objectName, String filePath) throws Exception {
         Path path = Paths.get(filePath);
 
-        // ⚠️ Validate file existence
         if (!Files.exists(path)) {
             throw new IllegalArgumentException("File not found: " + filePath);
         }
 
-        // ✅ Read file content
         byte[] content = Files.readAllBytes(path);
-
-        // ✅ Define the object ID and metadata
         BlobId blobId = BlobId.of(bucketName, objectName);
         BlobInfo blobInfo = BlobInfo.newBuilder(blobId).build();
 
-        // ✅ Upload the object
+        // Upload to GCS
         storage.create(blobInfo, content);
     }
 }

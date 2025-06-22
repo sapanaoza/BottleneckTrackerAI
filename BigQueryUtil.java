@@ -44,7 +44,7 @@ public class BigQueryUtil extends Agent {
         // Define the BigQuery table schema matching expected data structure
         Schema schema = Schema.of(
                 Field.of("machineId", StandardSQLTypeName.STRING),
-                Field.of("timestamp", StandardSQLTypeName.INT64),
+                Field.of("timestamp", StandardSQLTypeName.TIMESTAMP),
                 Field.of("avgRuntime", StandardSQLTypeName.FLOAT64),
                 Field.of("maxRuntime", StandardSQLTypeName.FLOAT64),
                 Field.of("bottleneckRatio", StandardSQLTypeName.FLOAT64),

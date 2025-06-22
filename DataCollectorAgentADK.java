@@ -2,51 +2,40 @@ package org.example.Agents;
 
 import com.google.gson.*;
 import jade.core.Agent;
-
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.Collectors;
 
-/**
- * DataCollectorAgentADK simulates machine runtime data,
- * performs statistical analysis to detect bottlenecks,
- * and exports data in both JSONL and CSV formats.
- *
- * This agent can be extended to collect real-time data
- * or receive messages via JADE or external connectors.
- */
 public class DataCollectorAgentADK extends Agent {
 
-    // File paths can be overridden via environment variables
+    // File paths via ENV
     private final String JSONL_PATH = System.getenv().getOrDefault("EXPORT_JSONL_PATH", "machine_data.jsonl");
     private final String CSV_PATH = System.getenv().getOrDefault("EXPORT_CSV_PATH", "machine_data.csv");
 
-    // Thread-safe list to collect received messages (if any)
+
+
     private final List<JsonObject> receivedMessages = new CopyOnWriteArrayList<>();
 
     @Override
     protected void setup() {
-        System.out.println(getLocalName() + " DataCollectorAgent Beginning data collection and analysis...");
+        System.out.println(getLocalName() + " Starting data collection and analysis...");
 
         performTask();
 
-        // Terminate the agent after one-time execution
         doDelete();
     }
 
-    /**
-     * Simulates machine data, analyzes it, and exports to JSONL and CSV.
-     */
     public void performTask() {
         try {
-            JsonArray generatedData = new JsonArray(); // For debug or future use
-            Map<String, List<Double>> runtimeMap = new HashMap<>(); // Map of machineId to runtimes
-            List<Map<String, Object>> analysisRows = new ArrayList<>(); // Output records for export
+            JsonArray generatedData = new JsonArray();
+            Map<String, List<Double>> runtimeMap = new HashMap<>();
+            List<Map<String, Object>> analysisRows = new ArrayList<>();
+            boolean shouldSendEmail = false;
 
-            // Simulate data for 10 samples
             for (int i = 0; i < 10; i++) {
-                String machineId = "M-" + (i % 3); // Create 3 distinct machines
+                String machineId = "M-" + (i % 3);
                 double runtime = Math.random() * 150;
 
                 JsonObject record = new JsonObject();
@@ -59,7 +48,6 @@ public class DataCollectorAgentADK extends Agent {
                 runtimeMap.computeIfAbsent(machineId, k -> new ArrayList<>()).add(runtime);
             }
 
-            // Analyze each machine's runtimes
             for (Map.Entry<String, List<Double>> entry : runtimeMap.entrySet()) {
                 String machineId = entry.getKey();
                 List<Double> runtimes = entry.getValue();
@@ -69,6 +57,8 @@ public class DataCollectorAgentADK extends Agent {
                 double bottleneckRatio = avg / max;
                 double bottleneckScore = avg / 100.0;
                 boolean alert = bottleneckRatio > 0.8 || bottleneckScore > 1.0;
+
+                if (alert) shouldSendEmail = true;
 
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("machineId", machineId);
@@ -82,25 +72,26 @@ public class DataCollectorAgentADK extends Agent {
                 analysisRows.add(row);
             }
 
-            // Export results
             writeJsonlFile(analysisRows, JSONL_PATH);
+
+            if (!validateJsonlFile(JSONL_PATH)) {
+                System.err.println(" JSONL validation failed. Aborting CSV export.");
+                return;
+            }
+
             convertJsonlToCsv(JSONL_PATH, CSV_PATH);
 
+
+
         } catch (Exception e) {
-            System.err.println(getLocalName() + "  Error during data collection: " + e.getMessage());
+            System.err.println(" Error during data collection: " + e.getMessage());
             e.printStackTrace();
         }
     }
 
-    /**
-     * Writes a list of data rows to a JSONL (.jsonl) file.
-     *
-     * @param dataRows  List of maps representing each row
-     * @param filePath  Path to save the file
-     */
     public void writeJsonlFile(List<Map<String, Object>> dataRows, String filePath) {
+        Gson gson = new GsonBuilder().disableHtmlEscaping().create();
         try (BufferedWriter writer = Files.newBufferedWriter(Paths.get(filePath))) {
-            Gson gson = new Gson();
             for (Map<String, Object> row : dataRows) {
                 writer.write(gson.toJson(row));
                 writer.newLine();
@@ -111,12 +102,27 @@ public class DataCollectorAgentADK extends Agent {
         }
     }
 
-    /**
-     * Converts a JSONL file to CSV format.
-     *
-     * @param jsonlFilePath  Input JSONL file path
-     * @param csvFilePath    Output CSV file path
-     */
+    public boolean validateJsonlFile(String jsonlFilePath) {
+        Gson gson = new Gson();
+        try (BufferedReader reader = Files.newBufferedReader(Paths.get(jsonlFilePath))) {
+            String line;
+            int lineNum = 1;
+            while ((line = reader.readLine()) != null) {
+                try {
+                    gson.fromJson(line, JsonObject.class);
+                } catch (JsonSyntaxException e) {
+                    System.err.println(" Invalid JSON at line " + lineNum + ": " + e.getMessage());
+                    return false;
+                }
+                lineNum++;
+            }
+        } catch (IOException e) {
+            System.err.println(" Error reading file for validation: " + e.getMessage());
+            return false;
+        }
+        return true;
+    }
+
     public void convertJsonlToCsv(String jsonlFilePath, String csvFilePath) {
         Gson gson = new Gson();
         List<String> headers = new ArrayList<>();
@@ -127,7 +133,6 @@ public class DataCollectorAgentADK extends Agent {
             while ((line = reader.readLine()) != null) {
                 JsonObject json = gson.fromJson(line, JsonObject.class);
                 Map<String, Object> row = new LinkedHashMap<>();
-
                 for (Map.Entry<String, JsonElement> entry : json.entrySet()) {
                     String key = entry.getKey();
                     Object value = entry.getValue().isJsonNull() ? "" : entry.getValue().getAsString();
@@ -137,15 +142,16 @@ public class DataCollectorAgentADK extends Agent {
                 rows.add(row);
             }
 
-            // Write CSV
             try (BufferedWriter writer = Files.newBufferedWriter(Paths.get(csvFilePath))) {
                 writer.write(String.join(",", headers));
                 writer.newLine();
                 for (Map<String, Object> row : rows) {
-                    List<String> values = new ArrayList<>();
-                    for (String header : headers) {
-                        values.add(String.valueOf(row.getOrDefault(header, "")));
-                    }
+                    List<String> values = headers.stream()
+                            .map(h -> {
+                                String cell = String.valueOf(row.getOrDefault(h, ""));
+                                return cell.contains(",") || cell.contains("\"") ? "\"" + cell.replace("\"", "\"\"") + "\"" : cell;
+                            })
+                            .collect(Collectors.toList());
                     writer.write(String.join(",", values));
                     writer.newLine();
                 }
@@ -158,26 +164,18 @@ public class DataCollectorAgentADK extends Agent {
         }
     }
 
-    /**
-     * Receives a JSON message and stores it in memory.
-     *
-     * @param message  Incoming message as JSON string
-     */
+
+
     public void receiveMessage(String message) {
         try {
             JsonObject json = JsonParser.parseString(message).getAsJsonObject();
             receivedMessages.add(json);
-            System.out.println(getLocalName() + "  received message: " + json);
+            System.out.println(getLocalName() + " received message: " + json);
         } catch (Exception e) {
             System.err.println(" Failed to parse incoming message: " + e.getMessage());
         }
     }
 
-    /**
-     * Returns and clears all collected messages.
-     *
-     * @return List of parsed messages
-     */
     public List<JsonObject> consumeReceivedMessages() {
         List<JsonObject> snapshot = new ArrayList<>(receivedMessages);
         receivedMessages.clear();
