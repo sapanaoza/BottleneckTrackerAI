@@ -1,3 +1,3 @@
-{"machineId":"M-1","avgRuntime":39.08499142525797,"maxRuntime":92.45877881304723,"bottleneckRatio":0.42272883037194653,"bottleneckScore":0.3908499142525797,"alert":false,"timestamp":1750511060151}
-{"machineId":"M-0","avgRuntime":76.5065643311633,"maxRuntime":111.15050965263522,"bottleneckRatio":0.688315011512405,"bottleneckScore":0.7650656433116331,"alert":false,"timestamp":1750511060151}
-{"machineId":"M-2","avgRuntime":140.6346007063711,"maxRuntime":148.39368460142472,"bottleneckRatio":0.9477128429293066,"bottleneckScore":1.4063460070637108,"alert":true,"timestamp":1750511060151}
+{"machineId":"M-1","avgRuntime":81.67343744916583,"maxRuntime":122.58002013233154,"bottleneckRatio":0.6662867028492497,"bottleneckScore":0.8167343744916583,"alert":false,"timestamp":1750602538840}
+{"machineId":"M-0","avgRuntime":84.7614486117893,"maxRuntime":131.75022008215214,"bottleneckRatio":0.6433495789148341,"bottleneckScore":0.847614486117893,"alert":false,"timestamp":1750602538840}
+{"machineId":"M-2","avgRuntime":50.64548077526491,"maxRuntime":80.13251672225924,"bottleneckRatio":0.6320215918189999,"bottleneckScore":0.5064548077526491,"alert":false,"timestamp":1750602538840}
